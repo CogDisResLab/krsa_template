@@ -13,7 +13,7 @@ quartile_figure <- function(df, grouping = "KinaseFamily") {
     tidyr::pivot_longer(where(is.numeric), names_to = "Method", values_to = "Qrt") |>
     dplyr::mutate(
       present = ifelse(is.na(Qrt), "No", "Yes"),
-      Qrt = ifelse(present == "No", 2, Qrt),
+      Qrt = ifelse(present == "No", 2L, Qrt),
       present = as.factor(present),
       Qrt = as.factor(Qrt),
       Method = as.factor(Method)
@@ -21,10 +21,10 @@ quartile_figure <- function(df, grouping = "KinaseFamily") {
     ggplot2::ggplot(ggplot2::aes(hgnc_symbol, Method)) +
     ggplot2::geom_point(ggplot2::aes(size = Qrt, shape = present)) +
     ggplot2::scale_size_manual(values = c(
-      `4` = 4,
-      `3` = 3,
-      `2` = 2,
-      `1` = 1
+      `4` = 4L,
+      `3` = 3L,
+      `2` = 2L,
+      `1` = 1L
     )) +
     ggplot2::theme_bw() +
     { # nolint: brace_linter.
@@ -41,7 +41,7 @@ quartile_figure <- function(df, grouping = "KinaseFamily") {
     } +
     ggplot2::scale_shape_manual(values = c(Yes = 19, No = 1)) +
     ggplot2::theme(axis.text.x = ggplot2::element_text(
-      angle = 30,
+      angle = 30L,
       size = 7.5,
       vjust = 0.7
     ), axis.ticks = ggplot2::element_blank(), legend.position = "bottom") +
@@ -50,8 +50,10 @@ quartile_figure <- function(df, grouping = "KinaseFamily") {
 }
 
 generate_quartile_plot <- function(datafile) {
-  creeden_data <-
-    readr::read_csv(file.path("results", datafile), show_col_types = FALSE)
+  creeden_data <- readr::read_csv(
+    file.path("results", datafile),
+    show_col_types = FALSE
+  )
 
   sig_kinases <- creeden_data |>
     dplyr::filter(Method == "KRSA", Qrt >= 4) |>
@@ -64,12 +66,12 @@ generate_quartile_plot <- function(datafile) {
 }
 
 creedenzymatic_files <- list.files("results", "creedenzymatic") |>
-  set_names(~ str_remove(.x, "_.*")) |>
+  set_names(~ str_extract(.x, "(.*)_creedenzymatic.csv", 1L)) |>
   map(generate_quartile_plot) |>
   imap(~ ggsave(
     str_glue("{.y}-creedenzymatic.png"),
     path = "figures",
     plot = .x,
-    width = 20,
-    height = 5
+    width = 20L,
+    height = 5L
   ))

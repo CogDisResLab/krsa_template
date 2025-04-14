@@ -26,8 +26,8 @@ sh_comparison <- read_csv("results/dpp_HSF1-SH_CTL-STK.csv") |>
 
 sh_genes <- sh_comparison |>
   select(Gene, LFC) |>
-  filter(LFC >= quantile(sh_comparison$LFC, 0.90) |
-    LFC <= quantile(sh_comparison$LFC, 0.10)) |>
+  filter(LFC >= quantile(sh_comparison[["LFC"]], 0.90) |
+    LFC <= quantile(sh_comparison[["LFC"]], 0.10)) |>
   pull(Gene)
 
 dbs <- c(

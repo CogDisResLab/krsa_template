@@ -5,33 +5,50 @@
 
 # This function will run both QC steps (krsa_filter_lowPeps, krsa_filter_nonLinear) and krsa_filter_ref_pep
 pep_passed_qc <- krsa_quick_filter(
-  data = data_pw_max, data2 = data_modeled$scaled,
-  signal_threshold = 5, r2_threshold = 0.8,
+  data = data_pw_max, data2 = data_modeled[["scaled"]],
+  signal_threshold = 5L, r2_threshold = 0.8,
   groups = c("{{case}}", "{{ctrl}}")
 )
 
+data_modeled[["scaled"]] |>
+  filter(
+    Peptide %in% pep_passed_qc,
+    Group %in% c("{{case}}", "{{ctrl}}")
+  ) |>
+  write_csv(
+    file.path(
+      "results",
+      "{{run_prefix}}-signal_{{case}}_{{ctrl}}-{{chip}}.csv"
+    )
+  )
+
 # This function calculates log2 fold change values between the defined groups
 # The byChip argument lets you calculates the log2 fold change the results within each chip
-differential_phosphorylated_peptides <- krsa_group_diff(data_modeled$scaled, c("{{case}}", "{{ctrl}}"), pep_passed_qc, byChip = T)
+differential_phosphorylated_peptides <- krsa_group_diff(
+  data_modeled[["scaled"]], c("{{case}}", "{{ctrl}}"), pep_passed_qc,
+  byChip = TRUE
+)
 
 # save LFC table
-write_csv(differential_phosphorylated_peptides, "results/{{if_else(exists('run_prefix'), str_c(run_prefix, '-'), '')}}dpp_{{case}}_{{ctrl}}-{{chip}}.csv")
+write_csv(
+  differential_phosphorylated_peptides,
+  file.path("results", "{{run_prefix}}-dpp_{{case}}_{{ctrl}}-{{chip}}.csv")
+)
 
 # Extract top peptides based on the LFC cutoff using average of LFCs across chips
-significant_peptides <-
-  krsa_get_diff(
-    differential_phosphorylated_peptides,
-    totalMeanLFC,
-    c(0.15, 0.2, 0.3, 0.4)
-  ) %>% list("meanLFC" = .)
+significant_peptides <- krsa_get_diff(
+  differential_phosphorylated_peptides,
+  totalMeanLFC,
+  c(0.15, 0.2, 0.3, 0.4)
+) %>% list(meanLFC = .)
 
 # Extract top peptides based on the LFC cutoff using per chip LFCs
 sigPepsPerChip <- krsa_get_diff_byChip(differential_phosphorylated_peptides, LFC, c(0.15, 0.2, 0.3, 0.4))
 
 # Combine the peptides hits in one list
-sigPeps_total <- list(significant_peptides, sigPepsPerChip) %>%
-  unlist(recursive = F) %>%
-  unlist(recursive = F)
+sigPeps_total <- list(significant_peptides, sigPepsPerChip) |>
+  unlist(recursive = FALSE) |>
+  unlist(recursive = FALSE)
 ```
 
 #### Heatmap
@@ -43,7 +60,10 @@ After applying the *Filtering Parameters* for this group comparison, only *`r le
 #| fig-cap: "Violin plot of two groups"
 
 # generates a heatmap using the selected groups and peptides
-krsa_heatmap(data_modeled$normalized, significant_peptides$meanLFC$`0.2`, groups = c("{{case}}", "{{ctrl}}"), scale = "row")
+krsa_heatmap(data_modeled[["normalized"]],
+  significant_peptides[["meanLFC"]][["0.2"]],
+  groups = c("{{case}}", "{{ctrl}}"), scale = "row"
+)
 ```
 
 #### Violin Plot
@@ -57,7 +77,11 @@ Below, the violin plot visualizes the distribution of selected peptides for the 
 #| fig-cap: "Violin plot of two groups"
 
 # generates a violin plot using the selected groups and peptides
-krsa_violin_plot(data_modeled$scaled, significant_peptides$meanLFC$`0.2`, "Barcode", groups = c("{{case}}", "{{ctrl}}"))
+krsa_violin_plot(data_modeled[["scaled"]],
+  significant_peptides[["meanLFC"]][["0.2"]],
+  "Barcode",
+  groups = c("{{case}}", "{{ctrl}}")
+)
 ```
 
 #### Waterfall Plot
@@ -71,7 +95,7 @@ This waterfall represents the log2 fold changes between the two groups at each p
 #| fig-cap: "Waterfall Plot to show the distribution of change in peptide phosphorylation"
 
 # generates a waterfall of the log2 fold change values for the selected peptide (top peptides)
-krsa_waterfall(differential_phosphorylated_peptides, lfc_thr = 0.2, byChip = F)
+krsa_waterfall(differential_phosphorylated_peptides, lfc_thr = 0.2, byChip = FALSE)
 ```
 
 #### Upstream Kinase Analysis
@@ -83,69 +107,79 @@ The lab carefully curated and mapped the kinases that can act and phosphorylate 
 
 # STK chip
 
-if (params$chip_type == "STK") {
+if (params[["chip_type"]] == "STK") {
   chipCov <- KRSA_coverage_STK_PamChip_87102_v2
   KRSA_file <- KRSA_Mapping_STK_PamChip_87102_v1
-} else if (params$chip_type == "PTK") {
+} else if (params[["chip_type"]] == "PTK") {
   chipCov <- KRSA_coverage_PTK_PamChip_86402_v1
   KRSA_file <- KRSA_Mapping_PTK_PamChip_86402_v1
 }
 
 
-# For parallel computing, load the furrr package:
-# opens multiple R sessions to run faster
-plan(multisession)
-
 # Run the KRSA function across the different sets of peptides using the furrr package for parallel computing
-mutiple_krsa_outputs <-
-  future_map(sigPeps_total, krsa, .options = furrr_options(seed = T), return_count = TRUE)
-saveRDS(mutiple_krsa_outputs, file = "datastore/{{if_else(exists('run_prefix'), str_c(run_prefix, '-'), '')}}multiple_krsa_output_{{case}}_{{ctrl}}_{{chip}}.RDS")
-
-plan(sequential)
+mutiple_krsa_outputs <- future_map(sigPeps_total, krsa,
+  .options = furrr_options(seed = TRUE), return_count = TRUE
+)
+saveRDS(mutiple_krsa_outputs,
+  file = file.path(
+    "datastore",
+    "{{run_prefix}}-multiple_krsa_output_{{case}}_{{ctrl}}_{{chip}}.RDS"
+  )
+)
 
 mutiple_krsa_outputs <- mutiple_krsa_outputs |>
   map(~ pluck(.x, "KRSA_Table"))
 
 # Tidy output
-df <- data.frame(matrix(unlist(mutiple_krsa_outputs), ncol = max(lengths(mutiple_krsa_outputs)), byrow = TRUE))
-df <- setNames(do.call(rbind.data.frame, mutiple_krsa_outputs), names(mutiple_krsa_outputs$meanLFC.0.2))
+df <- data.frame(matrix(unlist(mutiple_krsa_outputs),
+  ncol = max(lengths(mutiple_krsa_outputs)), byrow = TRUE
+))
+df <- setNames(
+  do.call(rbind.data.frame, mutiple_krsa_outputs),
+  names(mutiple_krsa_outputs[["meanLFC.0.2"]])
+)
 
-df <- df %>%
-  rownames_to_column("method") %>%
-  select(Kinase, Z, method) %>%
-  mutate(method = str_extract(method, "\\w+\\.\\w+\\.\\w+")) %>%
-  mutate(method = gsub("(^\\w+)[\\.]", "\\1>", method)) %>%
-  mutate_if(is.numeric, round, 2)
+df <- df |>
+  rownames_to_column("method") |>
+  select(Kinase, Z, method) |>
+  mutate(method = str_extract(method, "\\w+\\.\\w+\\.\\w+")) |>
+  mutate(method = gsub("(^\\w+)[\\.]", "\\1>", method)) |> # nolint: nonportable_path_linter.
+  mutate_if(is.numeric, round, 2L)
 
-df %>%
-  pivot_wider(names_from = method, values_from = Z) -> df2
+df2 <- df |>
+  pivot_wider(names_from = method, values_from = Z)
 
 # Creates an average Z score table using the across chip analysis
-df %>%
-  filter(grepl("mean", method)) %>%
-  select(Kinase, Z, method) %>%
-  group_by(Kinase) %>%
-  mutate(AvgZ = mean(Z)) -> AvgZTable
+AvgZTable <- df |>
+  filter(grepl(fixed("mean"), method)) |>
+  select(Kinase, Z, method) |>
+  group_by(Kinase) |>
+  mutate(AvgZ = mean(Z))
 
 # Creates an average Z score table using the within chip analysis
-df %>%
-  filter(!grepl("mean", method)) %>%
-  select(Kinase, Z, method) %>%
-  group_by(Kinase) %>%
-  mutate(AvgZ = mean(Z)) -> AvgZTable2
+AvgZTable2 <- df |>
+  filter(!grepl(fixed("mean"), method)) |>
+  select(Kinase, Z, method) |>
+  group_by(Kinase) |>
+  mutate(AvgZ = mean(Z))
 
 AvgZTable2 |>
-  write_csv("results/{{if_else(exists('run_prefix'), str_c(run_prefix, '-'), '')}}krsa_table_full_{{case}}_{{ctrl}}_{{chip}}.csv") |>
+  write_csv(
+    file.path(
+      "results",
+      "{{run_prefix}}-krsa_table_{{case}}_{{ctrl}}_{{chip}}.csv"
+    )
+  ) |>
   select(Kinase, AvgZ) |>
   unique() |>
-  mutate(Direction = if_else(AvgZ >= 0, "Up", "Down")) |>
+  mutate(Direction = if_else(AvgZ >= 0L, "Up", "Down")) |>
   group_by(Direction) |>
   nest() |>
   mutate(filtered = map(data, \(x) {
     x |>
       mutate(AbsZ = abs(AvgZ)) |>
       arrange(desc(AbsZ)) |>
-      slice_head(n = 10) |>
+      slice_head(n = 10L) |>
       select(-AbsZ)
   })) |>
   select(-data) |>
@@ -164,7 +198,7 @@ kinases_hits <- AvgZTable2 |>
   select(Kinase, AvgZ) |>
   unique() |>
   ungroup() |>
-  slice_max(AvgZ, n = 10) |>
+  slice_max(AvgZ, n = 10L) |>
   pull(Kinase)
 
 # krsa_top_hits(AvgZTable2, 1.75)
@@ -227,7 +261,7 @@ We will view the ball model network function, to generate a model representing t
 #| fig-height: 8
 
 # Plot the network ball model
-krsa_ball_model(kinases_hits, AvgZTable2, 10, 2.5, 4.8)
+krsa_ball_model(kinases_hits, AvgZTable2, 10L, 2.5, 4.8)
 ```
 
 \newpage

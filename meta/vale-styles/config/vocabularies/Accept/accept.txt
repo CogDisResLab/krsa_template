@@ -1,0 +1,9 @@
+RStudio
+VSCode
+Neovim
+KRSA
+CLI
+NOTE
+STK
+PTK
+frontmatter

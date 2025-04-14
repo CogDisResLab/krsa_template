@@ -1,7 +1,26 @@
+# Ignore RStudio project files
 .Rproj.user
+
+# Ignore R history files
 .Rhistory
+
+# Ignore R data files
 .RData
+
+# Ignore R user data files
 .Ruserdata
+
+# Ignore PDF files
 *.pdf
+
+# Ignore directories ending with _files
 *_files/
+
+# Ignore directories ending with _cache
 *_cache/
+
+# Ignore log files
+*.log
+
+# Ignore PNG image files
+*.png
