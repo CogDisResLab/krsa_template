@@ -9,7 +9,8 @@ default: all
 # Render all Rmd files
 render:
     #!/usr/bin/env Rscript
-    rmd_files <- list.files(path = ".", pattern = "^((?!_).)*\\.Rmd$", full.names = TRUE)
+    rmd_files <- list.files(path = ".", pattern = "\\.Rmd$", full.names = FALSE)
+    rmd_files <- rmd_files[!grepl("^_", rmd_files)]
     for (rmd_file in rmd_files) {
         cat("Rendering", rmd_file, "\n")
         system2("quarto", c("render", rmd_file))
