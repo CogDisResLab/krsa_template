@@ -22,27 +22,7 @@ suppressPackageStartupMessages({
 })
 
 # ==============================================================================
-# 1. LOAD REFERENCE DATA
-# ==============================================================================
-
-uka_db <- readRDS(
-  file.path(
-    "reference_data",
-    "UKA_231031-86502-87102_UpstreamDb.rds"
-  )
-)
-
-kinase_enrichment <- readr::read_csv(
-  file.path(
-    "reference_data",
-    "UKA_Kinase_enrichment.csv"
-  ),
-  show_col_types = FALSE
-)
-
-
-# ==============================================================================
-# 2. IDENTIFY COMPARISON METADATA
+# 1. IDENTIFY COMPARISON METADATA
 # ==============================================================================
 
 identify_dpp_comparison <- function(signal_path) {
@@ -94,7 +74,7 @@ identify_dpp_comparison <- function(signal_path) {
 
 
 # ==============================================================================
-# 3. PREPARE SIGNED DIFFERENTIAL PEPTIDE DATA
+# 2. PREPARE SIGNED DIFFERENTIAL PEPTIDE DATA
 # ==============================================================================
 
 prepare_signal_data <- function(
@@ -241,7 +221,7 @@ prepare_signal_data <- function(
 
 
 # ==============================================================================
-# 4. UKA FUNCTION
+# 3. UKA FUNCTION
 # ==============================================================================
 
 perform_uka <- function(
@@ -362,7 +342,7 @@ perform_uka <- function(
 
 
 # ==============================================================================
-# 5. LOCATE DIFFERENTIAL PEPTIDE FILES
+# 4. LOCATE DIFFERENTIAL PEPTIDE FILES
 # ==============================================================================
 
 signal_files <- list.files(
@@ -371,7 +351,7 @@ signal_files <- list.files(
   full.names = TRUE
 )
 
-# Keep only the explicitly requested p-minus-w comparisons.
+# Keep only p-minus-w comparisons.
 signal_files <- signal_files[
   stringr::str_detect(
     basename(signal_files),
@@ -379,127 +359,159 @@ signal_files <- signal_files[
   )
 ]
 
+
+# ==============================================================================
+# 5. RUN UKA ONLY WHEN P-W FILES EXIST
+# ==============================================================================
+
 if (length(signal_files) == 0L) {
-  stop(
+
+  message(
     "No p-w differential peptide files ending in ",
-    "'-STK.csv' or '-PTK.csv' were found under results/."
+    "'-STK.csv' or '-PTK.csv' were found under results/. ",
+    "Skipping UKA analysis."
   )
-}
 
-comparison_metadata <- purrr::map_dfr(
-  signal_files,
-  identify_dpp_comparison
-)
+} else {
 
-print(
-  comparison_metadata |>
-    dplyr::select(
-      comparison_name,
-      numerator_group,
-      denominator_group,
-      direction_label,
-      chip
+  # ============================================================================
+  # 5A. LOAD REFERENCE DATA
+  # ============================================================================
+
+  uka_db <- readRDS(
+    file.path(
+      "reference_data",
+      "UKA_231031-86502-87102_UpstreamDb.rds"
     )
-)
+  )
+
+  kinase_enrichment <- readr::read_csv(
+    file.path(
+      "reference_data",
+      "UKA_Kinase_enrichment.csv"
+    ),
+    show_col_types = FALSE
+  )
 
 
-# ==============================================================================
-# 6. RUN UKA
-# ==============================================================================
+  # ============================================================================
+  # 5B. IDENTIFY COMPARISONS
+  # ============================================================================
 
-uka_results <- purrr::pmap(
-  comparison_metadata,
-  function(
-      signal_path,
-      run_prefix,
-      comparison_name,
-      numerator_group,
-      denominator_group,
-      direction_label,
-      chip) {
+  comparison_metadata <- purrr::map_dfr(
+    signal_files,
+    identify_dpp_comparison
+  )
 
-    message("")
-    message(
-      "Running UKA: ",
-      direction_label,
-      " [",
-      chip,
-      "]"
-    )
-
-    message(
-      "Input file: ",
-      signal_path
-    )
-
-    prepared_data <- prepare_signal_data(
-      signal_path = signal_path,
-      numerator_group = numerator_group,
-      denominator_group = denominator_group
-    )
-
-    uka_result <- perform_uka(
-      dpp_data = prepared_data,
-      upstream_db = uka_db,
-      target_kinase_family = chip,
-      kinase_enrichment = kinase_enrichment
-    )
-
-    output_path <- file.path(
-      "results",
-      stringr::str_glue(
-        "{run_prefix}-uka_table_full_{comparison_name}.csv"
+  print(
+    comparison_metadata |>
+      dplyr::select(
+        comparison_name,
+        numerator_group,
+        denominator_group,
+        direction_label,
+        chip
       )
-    )
-
-    readr::write_csv(
-      uka_result,
-      output_path
-    )
-
-    message(
-      "Wrote: ",
-      output_path
-    )
-
-    uka_result
-  }
-)
-
-names(uka_results) <- comparison_metadata$comparison_name
+  )
 
 
-# ==============================================================================
-# 7. DIRECTIONAL DIAGNOSTIC SUMMARY
-# ==============================================================================
+  # ============================================================================
+  # 5C. RUN UKA
+  # ============================================================================
 
-direction_summary <- purrr::map2_dfr(
-  uka_results,
-  comparison_metadata$comparison_name,
-  function(result, comparison_name) {
-    result |>
-      dplyr::summarise(
-        comparison = comparison_name,
-        n_kinases = dplyr::n(),
-        n_positive_change = sum(
-          `Median Kinase Change` > 0,
-          na.rm = TRUE
-        ),
-        n_negative_change = sum(
-          `Median Kinase Change` < 0,
-          na.rm = TRUE
-        ),
-        n_zero_change = sum(
-          `Median Kinase Change` == 0,
-          na.rm = TRUE
-        ),
-        median_kinase_change = median(
-          `Median Kinase Change`,
-          na.rm = TRUE
+  uka_results <- purrr::pmap(
+    comparison_metadata,
+    function(
+        signal_path,
+        run_prefix,
+        comparison_name,
+        numerator_group,
+        denominator_group,
+        direction_label,
+        chip) {
+
+      message("")
+      message(
+        "Running UKA: ",
+        direction_label,
+        " [",
+        chip,
+        "]"
+      )
+
+      message(
+        "Input file: ",
+        signal_path
+      )
+
+      prepared_data <- prepare_signal_data(
+        signal_path = signal_path,
+        numerator_group = numerator_group,
+        denominator_group = denominator_group
+      )
+
+      uka_result <- perform_uka(
+        dpp_data = prepared_data,
+        upstream_db = uka_db,
+        target_kinase_family = chip,
+        kinase_enrichment = kinase_enrichment
+      )
+
+      output_path <- file.path(
+        "results",
+        stringr::str_glue(
+          "{run_prefix}-uka_table_full_{comparison_name}.csv"
         )
       )
-  }
-)
 
-print(direction_summary)
+      readr::write_csv(
+        uka_result,
+        output_path
+      )
 
+      message(
+        "Wrote: ",
+        output_path
+      )
+
+      uka_result
+    }
+  )
+
+  names(uka_results) <- comparison_metadata$comparison_name
+
+
+  # ============================================================================
+  # 5D. DIRECTIONAL DIAGNOSTIC SUMMARY
+  # ============================================================================
+
+  direction_summary <- purrr::map2_dfr(
+    uka_results,
+    comparison_metadata$comparison_name,
+    function(result, comparison_name) {
+      result |>
+        dplyr::summarise(
+          comparison = comparison_name,
+          n_kinases = dplyr::n(),
+          n_positive_change = sum(
+            `Median Kinase Change` > 0,
+            na.rm = TRUE
+          ),
+          n_negative_change = sum(
+            `Median Kinase Change` < 0,
+            na.rm = TRUE
+          ),
+          n_zero_change = sum(
+            `Median Kinase Change` == 0,
+            na.rm = TRUE
+          ),
+          median_kinase_change = median(
+            `Median Kinase Change`,
+            na.rm = TRUE
+          )
+        )
+    }
+  )
+
+  print(direction_summary)
+}
