@@ -1,6 +1,6 @@
 ---
-title: "Add Title Here"
-subtitle: "Customer Name Here"
+title: "MouseSTK"
+subtitle: "Rahaf"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 author: "Cognitive Disorders Research Lab"
 format: 
@@ -15,11 +15,11 @@ format:
 editor: source
 toc: true
 params:
-  chip_type: "STK" # Change the Chip Type to PTK if needed
-  signal_file: "kinome_data/SignalMinusBackground.txt" # Change the file name to the one you have
-  saturation_file: "kinome_data/SignalSaturation.txt" # Change the file name to the one you have
+  chip_type: STK
+  signal_file: "kinome_data/_KRSAsOutput_Median_SigmBg_260716141146.txt" # Change the file name to the one you have
+  saturation_file: "kinome_data/_KRSAsOutput_Signal_Saturation_260716141148.txt" # Change the file name to the one you have
   threshold: 2 # Change the threshold if necessary
-  prefix: "kinome"
+  prefix: kinome
   pairwise: FALSE
   figure_output: NULL
 ---
@@ -127,61 +127,235 @@ We will perform a couple of quality control steps to deal with negative values i
 
 ```{r}
 #| label: "quality-control"
-krsa_filter_lowPeps_cycles <- function(raw_data, threshold, min_pct_cycles = 0.8,
-                                      samples = NULL, groups = NULL) {
-    raw_data %>%
-        {
-            if (!is.null(samples)) dplyr::filter(., SampleName %in% samples) else .
-        } %>%
-        {
-            if (!is.null(groups)) dplyr::filter(., Group %in% groups) else .
-        } %>%
-        dplyr::filter(ExposureTime == max(ExposureTime)) %>%
-        dplyr::select(SampleName, Peptide, Cycle, Signal) %>%
-        dplyr::group_by(Peptide, SampleName) %>%
-        dplyr::summarise(pct_present = mean(Signal >= threshold, na.rm = TRUE), .groups = "drop") %>%
-        dplyr::group_by(Peptide) %>%
-        dplyr::filter(all(pct_present >= min_pct_cycles)) %>%
-        dplyr::pull(Peptide) %>%
-        unique() -> p
+detect_cycle_changes_all_exposures <- function(
+    raw_data,
+    k = 5,
+    min_replicates = 2,
+    min_groups = 4,
+    sat_qc = TRUE
+) {
+  
+  library(dplyr)
 
-    message(paste(
-        "Filtered out", length(unique(raw_data$Peptide)) - length(p),
-        "Peptides not present in at least", paste0(round(min_pct_cycles * 100), "%"),
-        "of cycles in every sample"
-    ))
+  qc_data <- krsa_qc_steps(raw_data, sat_qc = sat_qc) %>%
+    rename(Group = SampleName) %>%
+    mutate(SampleName = paste(Group, Barcode, sep = "_")) %>%
+    filter(
+      !grepl("^#REF", Peptide),
+      complete.cases(Signal, Cycle, ExposureTime)
+    )
 
-    p
+  if (!nrow(qc_data)) {
+    stop("No usable observations remained after KRSA QC.")
+  }
+
+  signal_data <- qc_data %>%
+    group_by(Peptide, Group, SampleName, ExposureTime, Cycle) %>%
+    summarise(
+      Signal = median(Signal, na.rm = TRUE),
+      n_original_rows = n(),
+      .groups = "drop"
+    )
+
+  cycle_diff_data <- signal_data %>%
+    arrange(Peptide, Group, SampleName, ExposureTime, Cycle) %>%
+    group_by(Peptide, Group, SampleName, ExposureTime) %>%
+    mutate(
+      previous_cycle = lag(Cycle),
+      previous_signal = lag(Signal),
+      cycle_interval = Cycle - previous_cycle,
+      signal_difference = Signal - previous_signal,
+      cycle_rate = signal_difference / cycle_interval
+    ) %>%
+    ungroup() %>%
+    filter(is.na(cycle_interval) | cycle_interval > 0)
+
+  cycle_change_data <- cycle_diff_data %>%
+    arrange(Peptide, Group, SampleName, ExposureTime, Cycle) %>%
+    group_by(Peptide, Group, SampleName, ExposureTime) %>%
+    mutate(
+      previous_cycle_rate = lag(cycle_rate),
+      cycle_rate_change = cycle_rate - previous_cycle_rate,
+      abs_cycle_rate_change = abs(cycle_rate_change),
+      first_cycle = lag(Cycle, 2),
+      middle_cycle = lag(Cycle),
+      final_cycle = Cycle,
+      direction = if_else(
+        cycle_rate_change > 0,
+        "Increase",
+        "Decrease"
+      )
+    ) %>%
+    ungroup() %>%
+    filter(
+      !is.na(cycle_rate_change),
+      !is.na(first_cycle),
+      cycle_rate_change != 0
+    )
+
+  if (!nrow(cycle_change_data)) {
+    stop("No cycle-rate changes could be calculated.")
+  }
+
+  thresholds <- cycle_change_data %>%
+    group_by(ExposureTime, first_cycle, middle_cycle, final_cycle) %>%
+    summarise(
+      n_observations = n(),
+      median_change = median(abs_cycle_rate_change, na.rm = TRUE),
+      mad_change = mad(abs_cycle_rate_change, na.rm = TRUE),
+      threshold = median_change + k * mad_change,
+      .groups = "drop"
+    )
+
+  flagged <- cycle_change_data %>%
+    left_join(
+      thresholds,
+      by = c(
+        "ExposureTime",
+        "first_cycle",
+        "middle_cycle",
+        "final_cycle"
+      )
+    ) %>%
+    filter(
+      !is.na(threshold),
+      abs_cycle_rate_change > threshold
+    )
+
+  group_flags <- flagged %>%
+    group_by(
+      Peptide,
+      Group,
+      ExposureTime,
+      first_cycle,
+      middle_cycle,
+      final_cycle,
+      direction
+    ) %>%
+    summarise(
+      n_replicates = n_distinct(SampleName),
+      replicates_affected = paste(
+        sort(unique(SampleName)),
+        collapse = ", "
+      ),
+      median_rate_change = median(cycle_rate_change, na.rm = TRUE),
+      median_abs_rate_change = median(
+        abs_cycle_rate_change,
+        na.rm = TRUE
+      ),
+      maximum_abs_rate_change = max(
+        abs_cycle_rate_change,
+        na.rm = TRUE
+      ),
+      threshold = first(threshold),
+      .groups = "drop"
+    ) %>%
+    filter(n_replicates >= min_replicates)
+
+  cross_group_flags <- group_flags %>%
+    group_by(
+      Peptide,
+      ExposureTime,
+      first_cycle,
+      middle_cycle,
+      final_cycle,
+      direction
+    ) %>%
+    summarise(
+      n_groups = n_distinct(Group),
+      groups_affected = paste(sort(unique(Group)), collapse = ", "),
+      total_replicates_affected = sum(n_replicates),
+      maximum_abs_rate_change = max(
+        maximum_abs_rate_change,
+        na.rm = TRUE
+      ),
+      .groups = "drop"
+    ) %>%
+    filter(n_groups >= min_groups)
+
+  peptide_summary <- cross_group_flags %>%
+    group_by(Peptide) %>%
+    summarise(
+      n_reproducible_events = n(),
+      n_groups_max = max(n_groups),
+      exposures_affected = paste(
+        sort(unique(ExposureTime)),
+        collapse = ", "
+      ),
+      cycle_regions = paste0(
+        first_cycle,
+        "→",
+        middle_cycle,
+        "→",
+        final_cycle,
+        " at exposure ",
+        ExposureTime,
+        " (",
+        direction,
+        ")",
+        collapse = "; "
+      ),
+      groups_affected = paste(
+        unique(groups_affected),
+        collapse = "; "
+      ),
+      maximum_abs_rate_change = max(
+        maximum_abs_rate_change,
+        na.rm = TRUE
+      ),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(n_reproducible_events), Peptide)
+
+  list(
+    removed_peptides = peptide_summary$Peptide,
+    peptide_summary = peptide_summary,
+    cross_group_flags = cross_group_flags,
+    group_flags = group_flags,
+    flagged = flagged,
+    thresholds = thresholds,
+    cycle_change_data = cycle_change_data,
+    cycle_diff_data = cycle_diff_data,
+    signal_data = signal_data,
+    qc_data = qc_data,
+    parameters = list(
+      k = k,
+      min_replicates = min_replicates,
+      min_groups = min_groups,
+      sat_qc = sat_qc
+    )
+  )
 }
 
-
-# qc processing
-qc_data <- krsa_qc_steps(raw_data) |>
-  mutate(
-    Group = SampleName,
-    SampleName = paste0(Group, "_", Barcode)
-  )
-
-groups <- unique(qc_data[["Group"]])
-
-# ---- NEW: filter out peptides not consistently present across cycles ----
-cycle_peptides <- krsa_filter_lowPeps_cycles(
-  raw_data = qc_data,
-  threshold = 5L,               # same as used later for low-signal filter
-  min_pct_cycles = 0.8          # keep peptides present in ≥80% of cycles
+cycle_result <- detect_cycle_changes_all_exposures(
+  raw_data = raw_data,
+  k = 5,
+  min_replicates = 2,
+  min_groups = 2,
+  sat_qc = TRUE
 )
 
-# Keep only those peptides for all downstream steps
-qc_data_filtered <- qc_data |>
-  dplyr::filter(Peptide %in% cycle_peptides)
+qc_data_filtered <- cycle_result$qc_data %>%
+  filter(
+    !Peptide %in% cycle_result$removed_peptides
+  )
 
-# extract end level signal values @ all max exposure time (100ms)
-data_pw_max <- krsa_extractEndPointMaxExp(qc_data_filtered, chipType)
 
-# extract end level signal values end level @ all exposure times
-data_pw <- krsa_extractEndPoint(qc_data_filtered, chipType)
+# Extract endpoint at maximum exposure
+data_pw_max <- krsa_extractEndPointMaxExp(
+  qc_data_filtered,
+  chipType
+)
+
+# Extract endpoint at all exposures
+data_pw <- krsa_extractEndPoint(
+  qc_data_filtered,
+  chipType
+)
 
 ```
+
+
 
 ## QC Steps and Model Fitting
 
